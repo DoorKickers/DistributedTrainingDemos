@@ -13,19 +13,23 @@ import math
 from torch.distributed.pipelining import pipeline, SplitPoint
 from torch.distributed.pipelining import ScheduleGPipe
 
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
-        return x + self.pe[:, :x.size(1)]
+        return x + self.pe[:, : x.size(1)]
+
 
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, d_model, num_heads):
@@ -42,19 +46,36 @@ class MultiHeadSelfAttention(nn.Module):
     def forward(self, x, mask=None):
         batch_size = x.shape[0]
 
-        q = self.q_linear(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        k = self.k_linear(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        v = self.v_linear(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        q = (
+            self.q_linear(x)
+            .view(batch_size, -1, self.num_heads, self.d_k)
+            .transpose(1, 2)
+        )
+        k = (
+            self.k_linear(x)
+            .view(batch_size, -1, self.num_heads, self.d_k)
+            .transpose(1, 2)
+        )
+        v = (
+            self.v_linear(x)
+            .view(batch_size, -1, self.num_heads, self.d_k)
+            .transpose(1, 2)
+        )
 
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-1e9'))
+            scores = scores.masked_fill(mask == 0, float("-1e9"))
 
         attn_weights = F.softmax(scores, dim=-1)
         output = torch.matmul(attn_weights, v)
 
-        output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.num_heads * self.d_k)
+        output = (
+            output.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, -1, self.num_heads * self.d_k)
+        )
         return self.out_linear(output)
+
 
 class FeedForward(nn.Module):
     def __init__(self, d_model, d_ff):
@@ -64,6 +85,7 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.fc2(F.relu(self.fc1(x)))
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
@@ -81,12 +103,23 @@ class TransformerBlock(nn.Module):
         x = self.norm2(x + self.dropout(ffn_out))
         return x
 
+
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, d_model=512, num_heads=8, d_ff=2048, num_layers=6, max_len=5000):
+    def __init__(
+        self,
+        vocab_size,
+        d_model=512,
+        num_heads=8,
+        d_ff=2048,
+        num_layers=6,
+        max_len=5000,
+    ):
         super(Transformer, self).__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoding = PositionalEncoding(d_model, max_len)
-        self.layers = nn.ModuleList([TransformerBlock(d_model, num_heads, d_ff) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [TransformerBlock(d_model, num_heads, d_ff) for _ in range(num_layers)]
+        )
         self.out_linear = nn.Linear(d_model, vocab_size)
 
     def forward(self, x, mask=None):
@@ -96,17 +129,19 @@ class Transformer(nn.Module):
             x = layer(x)
         return self.out_linear(x)
 
+
 class NLPDataset(Dataset):
     def __init__(self, size, length):
         self.data = []
         for i in range(size):
-            self.data.append(torch.full((length, ), i))
+            self.data.append(torch.full((length,), i))
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         return self.data[idx]
+
 
 def train(rank, world_size):
     VOCAB_SIZE = 100
@@ -133,11 +168,18 @@ def train(rank, world_size):
     x = torch.zeros((BATCH_SIZE // NUM_MICROBATCHES, DATASET_LENGTH), dtype=torch.long)
 
     pipe = pipeline(
-        module=Transformer(vocab_size=VOCAB_SIZE, d_model=D_MODEL, num_heads=NUM_HEADS, d_ff=D_FF, num_layers=NUM_LAYERS, max_len=MAX_LEN),
+        module=Transformer(
+            vocab_size=VOCAB_SIZE,
+            d_model=D_MODEL,
+            num_heads=NUM_HEADS,
+            d_ff=D_FF,
+            num_layers=NUM_LAYERS,
+            max_len=MAX_LEN,
+        ),
         mb_args=(x,),
         split_spec={
-        "layers.1": SplitPoint.BEGINNING,
-        }
+            "layers.1": SplitPoint.BEGINNING,
+        },
     )
 
     rank = int(os.environ["RANK"])
@@ -161,10 +203,13 @@ def train(rank, world_size):
             else:
                 losses = []
                 output = schedule.step(target=x, losses=losses)
-                print(f"Epoch {epoch}, Batch {batch}, Loss: {torch.stack(losses).mean()}")
+                print(
+                    f"Epoch {epoch}, Batch {batch}, Loss: {torch.stack(losses).mean()}"
+                )
             optimizer.step()
 
     dist.destroy_process_group()
+
 
 if __name__ == "__main__":
     train(int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"]))
