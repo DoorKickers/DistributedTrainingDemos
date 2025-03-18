@@ -1,0 +1,22 @@
+# Model arguments
+vocab_size: 100
+max_seq_length: 100
+hidden_size: 24
+feedforward_size: 48
+num_heads: 4
+num_layers: 15
+
+# Dataset arguments
+dataset_size: 16
+data_length: 10
+
+# Training arguments
+train_epochs: 200
+micro_batch_size: 2
+micro_num: 2
+learning_rate: 0.01
+device_type: "gpu"
+
+# Parallel arguments
+pipeline_parallel_size: 2
+data_parallel_size: 2
