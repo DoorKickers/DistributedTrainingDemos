@@ -184,10 +184,6 @@ def parse_yaml_config(file_path):
     return model_args, dataset_args, training_args, parallel_args
 
 
-if __name__ == "__main__":
-    config_file = "config.yaml"
-
-
 def train(rank, world_size, config_file):
     model_args, dataset_args, training_args, parallel_args = parse_yaml_config(
         config_file
