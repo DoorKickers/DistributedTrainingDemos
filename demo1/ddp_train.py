@@ -184,10 +184,11 @@ def train(rank, world_size):
 
     for epoch in range(200):
         for batch, data in enumerate(dataloader):
-            data = data.to(device)
+            label = data[:, 1:].to(device)
+            data = data[:, :-1].to(device)
             optimizer.zero_grad()
             outputs = model(data)
-            loss = criterion(outputs.view(-1, VOCAB_SIZE), data.view(-1))
+            loss = criterion(outputs.view(-1, VOCAB_SIZE), label.view(-1))
             loss.backward()
             optimizer.step()
 

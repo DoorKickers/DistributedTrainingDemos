@@ -165,7 +165,7 @@ def train(rank, world_size):
     dataset = NLPDataset(size=DATASET_SIZE, length=DATASET_LENGTH)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE)
 
-    x = torch.zeros((BATCH_SIZE // NUM_MICROBATCHES, DATASET_LENGTH), dtype=torch.long)
+    x = torch.zeros((BATCH_SIZE // NUM_MICROBATCHES, DATASET_LENGTH - 1), dtype=torch.long)
 
     pipe = pipeline(
         module=Transformer(
@@ -196,13 +196,14 @@ def train(rank, world_size):
     schedule = ScheduleGPipe(stage, NUM_MICROBATCHES, compute_loss)
     for epoch in range(200):
         for batch, data in enumerate(dataloader):
-            x = data.to(device)
+            label = data[:, 1:].to(device)
+            x = data[:, :-1].to(device)
             optimizer.zero_grad()
             if rank == 0:
                 schedule.step(x)
             else:
                 losses = []
-                output = schedule.step(target=x, losses=losses)
+                output = schedule.step(target=label, losses=losses)
                 print(
                     f"Epoch {epoch}, Batch {batch}, Loss: {torch.stack(losses).mean()}"
                 )

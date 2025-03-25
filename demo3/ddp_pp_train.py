@@ -195,7 +195,7 @@ def train(rank, world_size, config_file):
         return loss
 
     x = torch.zeros(
-        (training_args["micro_batch_size"], dataset_args["data_length"]),
+        (training_args["micro_batch_size"], dataset_args["data_length"] - 1),
         dtype=torch.long,
     )
 
@@ -261,13 +261,14 @@ def train(rank, world_size, config_file):
     )
     for epoch in range(training_args["train_epochs"]):
         for batch, data in enumerate(dataloader):
-            x = data.to(device)
+            label = data[:, 1:].to(device)
+            x = data[:, :-1].to(device)
             optimizer.zero_grad()
             if pp_rank == 0:
                 schedule.step(x)
             else:
                 losses = []
-                output = schedule.step(target=x, losses=losses)
+                output = schedule.step(target=label, losses=losses)
                 loss = torch.stack(losses).mean()
                 dist.all_reduce(loss, op=ReduceOp.SUM, group=dp_group)
                 if dp_rank == 0:
