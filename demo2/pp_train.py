@@ -144,29 +144,35 @@ class NLPDataset(Dataset):
 
 
 def train(rank, world_size):
-    VOCAB_SIZE = 100
-    D_MODEL = 12
-    NUM_HEADS = 4
-    D_FF = 24
-    NUM_LAYERS = 2
-    MAX_LEN = 100
+    # Transformer模型的基本参数
+    VOCAB_SIZE = 100        # 词表大小
+    D_MODEL = 12            # 模型的嵌入维度（hidden size）
+    NUM_HEADS = 4           # 多头注意力的头数
+    D_FF = 24               # 前馈网络维度
+    NUM_LAYERS = 2          # Transformer 层数
+    MAX_LEN = 100           # 序列最大长度
 
-    DATASET_SIZE = 12
-    DATASET_LENGTH = 10
-    BATCH_SIZE = 4
+    # 数据集相关参数
+    DATASET_SIZE = 12       # 数据集中样本数量
+    DATASET_LENGTH = 10     # 每个样本的序列长度
+    BATCH_SIZE = 4          # 每个 batch 的样本数
 
-    NUM_MICROBATCHES = 2
+    NUM_MICROBATCHES = 2    # 用于 GPipe 分割的 microbatch 数
 
+    # 定义损失函数的封装（方便被 GPipe 调用）
     def compute_loss(output, target):
         criterion = nn.CrossEntropyLoss()
         loss = criterion(output.view(-1, VOCAB_SIZE), target.view(-1))
         return loss
 
+    # 构造 NLP 数据集和 DataLoader
     dataset = NLPDataset(size=DATASET_SIZE, length=DATASET_LENGTH)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE)
 
+    # 构造一个输入模板，用于 GPipe pipeline 初始化
     x = torch.zeros((BATCH_SIZE // NUM_MICROBATCHES, DATASET_LENGTH - 1), dtype=torch.long)
 
+    # 构建带有 split_spec 的 GPipe pipeline，将模型划分为多个 stage
     pipe = pipeline(
         module=Transformer(
             vocab_size=VOCAB_SIZE,
@@ -176,39 +182,56 @@ def train(rank, world_size):
             num_layers=NUM_LAYERS,
             max_len=MAX_LEN,
         ),
-        mb_args=(x,),
+        mb_args=(x,),  # microbatch 的输入形状，用于模型切分
         split_spec={
-            "layers.1": SplitPoint.BEGINNING,
+            "layers.1": SplitPoint.BEGINNING,  # 从 Transformer 第2层开始划分模型
         },
     )
 
+    # 通过环境变量获取当前进程的rank和world size
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
+    # 初始化 PyTorch 分布式通信
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
+    # 指定当前 rank 使用的 GPU 设备
     device = f"cuda:{rank}"
 
+    # 获取当前 rank 的模型 stage，用于定义 optimizer
     stage_mod = pipe.get_stage_module(rank)
     optimizer = optim.SGD(stage_mod.parameters(), lr=0.01)
+
+    # 构建模型 stage，并设置 device 和通信信息
     stage = pipe.build_stage(rank, device, None)
 
+    # 创建 GPipe 的训练调度器（ScheduleGPipe）
     schedule = ScheduleGPipe(stage, NUM_MICROBATCHES, compute_loss)
+
+    # 正式开始训练过程
     for epoch in range(200):
         for batch, data in enumerate(dataloader):
-            label = data[:, 1:].to(device)
-            x = data[:, :-1].to(device)
-            optimizer.zero_grad()
+            # 将输入数据切分为 input 和 target
+            label = data[:, 1:].to(device)  # 目标序列（标签）
+            x = data[:, :-1].to(device)     # 输入序列（模型输入）
+
+            optimizer.zero_grad()           # 梯度清零
+
+            # 对于 rank 0：只负责前向传输，不计算 loss
             if rank == 0:
                 schedule.step(x)
             else:
+                # 其他 stage（最后一段）负责 loss 计算和反向传播
                 losses = []
                 output = schedule.step(target=label, losses=losses)
                 print(
                     f"Epoch {epoch}, Batch {batch}, Loss: {torch.stack(losses).mean()}"
                 )
+
+            # 优化参数
             optimizer.step()
 
+    # 销毁进程组，结束训练
     dist.destroy_process_group()
 
 

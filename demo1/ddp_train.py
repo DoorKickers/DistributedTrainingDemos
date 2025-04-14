@@ -149,26 +149,35 @@ class SimpleModel(nn.Module):
 
 
 def train(rank, world_size):
-    VOCAB_SIZE = 100
-    D_MODEL = 12
-    NUM_HEADS = 4
-    D_FF = 24
-    NUM_LAYERS = 2
-    MAX_LEN = 100
+    # 设置模型和训练的超参数
+    VOCAB_SIZE = 100        # 词汇表大小
+    D_MODEL = 12            # 嵌入维度 / 模型维度
+    NUM_HEADS = 4           # 注意力头数量
+    D_FF = 24               # 前馈层的中间维度
+    NUM_LAYERS = 2          # Transformer 层数
+    MAX_LEN = 100           # 输入序列的最大长度
 
-    DATASET_SIZE = 12
-    DATASET_LENGTH = 10
-    BATCH_SIZE = 2
+    DATASET_SIZE = 12       # 样本数量（总数据条数）
+    DATASET_LENGTH = 10     # 每条样本的长度
+    BATCH_SIZE = 2          # 每个进程的 batch 大小
 
+    # 创建自定义数据集
     dataset = NLPDataset(size=DATASET_SIZE, length=DATASET_LENGTH)
+
+    # 为分布式训练设置采样器，每个 rank（进程）处理自己的一份数据
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
+
+    # 使用带分布式采样器的数据加载器
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=sampler)
 
+    # 设置后端：GPU 可用就使用 nccl，否则使用 gloo（CPU）
     backend = "nccl" if torch.cuda.is_available() else "gloo"
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
+    # 初始化当前进程的分布式环境
     dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
+    # 实例化 Transformer 模型并移动到对应设备
     model = Transformer(
         vocab_size=VOCAB_SIZE,
         d_model=D_MODEL,
@@ -177,25 +186,39 @@ def train(rank, world_size):
         num_layers=NUM_LAYERS,
         max_len=MAX_LEN,
     ).to(device)
+
+    # 将模型封装为分布式模型（DDP）
     model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
 
+    # 使用交叉熵作为损失函数
     criterion = nn.CrossEntropyLoss()
+
+    # 使用 SGD 作为优化器
     optimizer = optim.SGD(model.parameters(), lr=0.01)
 
+    # 开始训练循环
     for epoch in range(200):
         for batch, data in enumerate(dataloader):
-            label = data[:, 1:].to(device)
-            data = data[:, :-1].to(device)
-            optimizer.zero_grad()
-            outputs = model(data)
-            loss = criterion(outputs.view(-1, VOCAB_SIZE), label.view(-1))
-            loss.backward()
-            optimizer.step()
+            # 目标是当前句子的下一位
+            label = data[:, 1:].to(device)       # 标签是输入右移一位
+            data = data[:, :-1].to(device)       # 输入去掉最后一个 token
 
+            optimizer.zero_grad()                # 清空梯度
+            outputs = model(data)                # 前向传播
+
+            # 计算损失：输出和标签都 reshape 成二维，适配交叉熵
+            loss = criterion(outputs.view(-1, VOCAB_SIZE), label.view(-1))
+
+            loss.backward()                      # 反向传播
+            optimizer.step()                     # 更新参数
+
+            # 只在 rank==0 的主进程上打印日志，避免重复
             if rank == 0:
                 print(f"Epoch {epoch}, Batch {batch}, Loss: {loss.item()}")
 
+    # 训练完成后销毁分布式进程组
     dist.destroy_process_group()
+
 
 
 if __name__ == "__main__":

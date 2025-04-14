@@ -147,9 +147,11 @@ class NLPDataset(Dataset):
 
 
 def parse_yaml_config(file_path):
+    # 解析 YAML 配置文件，读取模型、数据集、训练、并行配置参数
     with open(file_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
+    # 模型结构参数
     model_args = {
         "vocab_size": config.get("vocab_size"),
         "max_seq_length": config.get("max_seq_length"),
@@ -159,11 +161,13 @@ def parse_yaml_config(file_path):
         "num_layers": config.get("num_layers"),
     }
 
+    # 数据集参数
     dataset_args = {
         "dataset_size": config.get("dataset_size"),
         "data_length": config.get("data_length"),
     }
 
+    # 训练参数
     training_args = {
         "train_epochs": config.get("train_epochs"),
         "micro_batch_size": config.get("micro_batch_size"),
@@ -172,10 +176,12 @@ def parse_yaml_config(file_path):
         "device_type": config.get("device_type"),
     }
 
+    # 由微批数和微批大小计算总 batch size
     training_args["batch_size"] = (
         training_args["micro_num"] * training_args["micro_batch_size"]
     )
 
+    # 并行参数
     parallel_args = {
         "pipeline_parallel_size": config.get("pipeline_parallel_size"),
         "data_parallel_size": config.get("data_parallel_size"),
@@ -185,22 +191,25 @@ def parse_yaml_config(file_path):
 
 
 def train(rank, world_size, config_file):
-    model_args, dataset_args, training_args, parallel_args = parse_yaml_config(
-        config_file
-    )
+    # 加载配置
+    model_args, dataset_args, training_args, parallel_args = parse_yaml_config(config_file)
 
+    # 定义 loss 函数
     def compute_loss(output, target):
         criterion = nn.CrossEntropyLoss()
         loss = criterion(output.view(-1, model_args["vocab_size"]), target.view(-1))
         return loss
 
+    # 创建一个微批的输入占位符（用于推理管道构建）
     x = torch.zeros(
         (training_args["micro_batch_size"], dataset_args["data_length"] - 1),
         dtype=torch.long,
     )
 
+    # 构建流水线切割点，按层划分阶段
     split_spec = {}
     for i in range(parallel_args["pipeline_parallel_size"] - 1):
+        # 按等间隔方式划分 Transformer 层的切割点
         layers_id = (
             (model_args["num_layers"] - 1)
             // parallel_args["pipeline_parallel_size"]
@@ -208,6 +217,7 @@ def train(rank, world_size, config_file):
         )
         split_spec[f"layers.{layers_id}"] = SplitPoint.END
 
+    # 构建流水线模型，进行 pipeline 切分
     pipe = pipeline(
         module=Transformer(
             vocab_size=model_args["vocab_size"],
@@ -221,6 +231,7 @@ def train(rank, world_size, config_file):
         split_spec=split_spec,
     )
 
+    # 初始化 2D 并行设备网格（data 并行 x pipeline 并行）
     mesh_2d = init_device_mesh(
         training_args["device_type"],
         mesh_shape=(
@@ -230,26 +241,38 @@ def train(rank, world_size, config_file):
         mesh_dim_names=("dp", "pp"),
     )
 
+    # 获取当前进程在 pipeline 和 data 并行中的 rank
     pp_group = mesh_2d.get_group("pp")
     dp_group = mesh_2d.get_group("dp")
 
     pp_rank = dist.get_rank(pp_group)
     dp_rank = dist.get_rank(dp_group)
 
+    # 设置当前 rank 使用的设备
     device = f"cuda:{rank % 2}" if training_args["device_type"] == "gpu" else "cpu"
 
+    # 获取该 stage 的模型模块，并移动到设备
     stage_mod = pipe.get_stage_module(pp_rank).to(device)
     print("rank, stage_mod", rank, stage_mod)
+
+    # 使用 DDP 包装当前模块，支持数据并行
     dp_mod = DDP(
         stage_mod,
         device_ids=[rank] if not device == "cpu" else None,
         process_group=dp_group,
     )
-    optimizer = optim.SGD(dp_mod.parameters(), lr=training_args["learning_rate"])
-    info = pipe.info()
-    stage = build_stage(stage_mod, pp_rank, info, device, pp_group)
 
+    # 构造优化器
+    optimizer = optim.SGD(dp_mod.parameters(), lr=training_args["learning_rate"])
+
+    # 构建流水线执行阶段
+    info = pipe.info()
+    stage = build_stage(dp_mod, pp_rank, info, device, pp_group)
+
+    # 构建流水线调度器（GPipe），支持前后向分段流水并行
     schedule = ScheduleGPipe(stage, training_args["micro_num"], compute_loss)
+
+    # 构建数据集和分布式采样器
     dataset = NLPDataset(
         size=dataset_args["dataset_size"], length=dataset_args["data_length"]
     )
@@ -259,24 +282,34 @@ def train(rank, world_size, config_file):
     dataloader = DataLoader(
         dataset, batch_size=training_args["batch_size"], sampler=sampler
     )
+
+    # 训练主循环
     for epoch in range(training_args["train_epochs"]):
         for batch, data in enumerate(dataloader):
             label = data[:, 1:].to(device)
             x = data[:, :-1].to(device)
+
             optimizer.zero_grad()
+
             if pp_rank == 0:
+                # 第一个阶段只进行前向传播
                 schedule.step(x)
             else:
+                # 其他阶段进行前向 + 反向传播，并收集 loss
                 losses = []
                 output = schedule.step(target=label, losses=losses)
                 loss = torch.stack(losses).mean()
+
+                # 对 loss 进行 data-parallel 级别的 all-reduce
                 dist.all_reduce(loss, op=ReduceOp.SUM, group=dp_group)
                 if dp_rank == 0:
                     print(
                         f"Epoch {epoch}, Batch {batch}, Loss: {loss / parallel_args['data_parallel_size']}"
                     )
+
             optimizer.step()
 
+    # 销毁进程组，释放资源
     dist.destroy_process_group()
 
 

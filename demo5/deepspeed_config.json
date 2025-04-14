@@ -1,10 +1,11 @@
 {
-    "train_batch_size": "auto",  
+    "train_batch_size": "auto",
     "train_micro_batch_size_per_gpu": 1,  
     "zero_optimization": {
         "stage": 3,
         "offload_optimizer": {
-            "device": "cpu"
+            "device": "cpu",
+            "ratio": 0.85
         },
         "overlap_comm": true,
         "contiguous_gradients": true,
