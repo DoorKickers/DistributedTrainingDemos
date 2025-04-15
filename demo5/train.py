@@ -54,7 +54,6 @@ def generate_r1_prompt(prompt, completion):
         full, tokenize=True, return_dict=True
     )
 
-    # 获取完整输入的 token ID 和 attention mask
     input_ids = tokenized_full["input_ids"]
     attention_mask = tokenized_full["attention_mask"]
 
