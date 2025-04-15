@@ -188,6 +188,10 @@ def train(rank, world_size):
     ).to(device)
 
     # 将模型封装为分布式模型（DDP）
+    # DDP 会自动将模型 warp 成一个数据并行的形式，这样不同的进程在执行 forward 的时候，DDP 会自动进行数据并行的相关处理，例如反向传播的时候会自动同步梯度
+    # DDP 的初始化需要传入整个进程通信组的相关信息，例如有多少个进程参与此次训练，每个进程的通信地址是什么，从而建立卡间通信网络
+    # device_ids 对应当前进程使用的 GPU 编号，从而保证不同进程的模型放到不用的 GPU 上。
+    # DistributedSampler 确保 DDP 模型在不同进程上获得的数据不同，反向传播以后，每个进程保存的模型梯度是不同的，这时根据之前建立的进程组信息，DDP 会自动将不同进程的模型梯度同步，同步以后结果等于执行一次 batch_size 为 DP 组数的训练。因此 global_batch_size = num_dp_group * batch_size_per_group
     model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
 
     # 使用交叉熵作为损失函数

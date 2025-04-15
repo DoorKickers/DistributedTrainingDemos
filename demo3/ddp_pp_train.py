@@ -232,6 +232,9 @@ def train(rank, world_size, config_file):
     )
 
     # 初始化 2D 并行设备网格（data 并行 x pipeline 并行）
+    # 例如，4 张 GPU 进行训练，编号为 0 1 2 3，一种 2D 并行方法为：GPU 0 1 为一个DP组，两张卡负责存储完整的模型权重，其中 0 号卡负责前半部分模型，1 号卡后半部分模型。 2 3 号卡同理。
+    # 这样 4 张 GPU 便可以存储两个完整的模型权重，每张 GPU 需要模型权重一半的显存。在节省显存的同时，因为同时处理两个 batch 的数据，也提高了训练的速度。
+    # device_mesh 即定义了这种二维设备关系，例如哪两个卡属于同一个 DP 组。
     mesh_2d = init_device_mesh(
         training_args["device_type"],
         mesh_shape=(
@@ -245,6 +248,8 @@ def train(rank, world_size, config_file):
     pp_group = mesh_2d.get_group("pp")
     dp_group = mesh_2d.get_group("dp")
 
+    # pp rank 指的是该进程负责保存模型前半部分还是后半部分
+    # dp rank 指的是该进程属于哪个 dp 组，相同 dp 组内的卡共同保存模型的权重
     pp_rank = dist.get_rank(pp_group)
     dp_rank = dist.get_rank(dp_group)
 
@@ -284,6 +289,9 @@ def train(rank, world_size, config_file):
     )
 
     # 训练主循环
+    # 在训练的主循环里，不仅用到了 DP ，也用到了 PP 。
+    # 对于 DP，我们需要维护一个 DistributedSampler，对于 PP 我们有Pipeline Schedular。
+    # DDP 将模型 warp 以后，在反向传播以后会自动同步梯度，而反向传播的具体过程，又由 schedular 提供，因为 torch 的工程实现，我们组合两种并行方法变得较为简单。
     for epoch in range(training_args["train_epochs"]):
         for batch, data in enumerate(dataloader):
             label = data[:, 1:].to(device)
@@ -311,7 +319,6 @@ def train(rank, world_size, config_file):
 
     # 销毁进程组，释放资源
     dist.destroy_process_group()
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="YAML Configuration Parser")

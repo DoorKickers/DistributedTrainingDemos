@@ -14,9 +14,14 @@ model_path = "/nvme/models/models/Qwen2.5-7B-Instruct"
 
 tokenizer = AutoTokenizer.from_pretrained(model_path)
  
+# 定义系统提示词，一般用于设定模型身份或行为风格
 system_prompt = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+
+# 构造训练样本的函数，用于从 prompt 和 completion 构造 input_ids, attention_mask 和 labels
 def generate_r1_prompt(prompt, completion):
     input_ids, attention_mask, labels = [], [], []
+
+    # 构造指令部分：系统设定和用户输入
     instruction = [
         {
             "role": "system",
@@ -27,6 +32,8 @@ def generate_r1_prompt(prompt, completion):
             "content": prompt
         },
     ]
+
+    # 构造响应部分：模型的回答（目标输出）
     response = [
         {
             "role": "assistant",
@@ -34,23 +41,43 @@ def generate_r1_prompt(prompt, completion):
         }
     ]
 
+    # 将 instruction 和 response 拼接成完整的对话
     full = instruction + response
 
-    tokenized_instruction = tokenizer.apply_chat_template(instruction, tokenize=True, return_dict=True)
-    tokenized_full = tokenizer.apply_chat_template(full, tokenize=True, return_dict=True)
+    # 对 instruction（系统+用户）进行分词，用于计算标签掩码（仅训练 assistant 的回复）
+    tokenized_instruction = tokenizer.apply_chat_template(
+        instruction, tokenize=True, return_dict=True
+    )
 
+    # 对完整对话进行分词，生成 input_ids 和 attention_mask
+    tokenized_full = tokenizer.apply_chat_template(
+        full, tokenize=True, return_dict=True
+    )
+
+    # 获取完整输入的 token ID 和 attention mask
     input_ids = tokenized_full["input_ids"]
     attention_mask = tokenized_full["attention_mask"]
+
+    # 初始化标签为 input_ids 的副本（后续根据需要掩盖一部分）
     labels = input_ids.copy()
+
+    # 只训练 assistant 的回复，因此将 instruction 部分的标签设为 -100，表示不参与 loss 计算
     instruction_length = len(tokenized_instruction["input_ids"])
     labels[:instruction_length] = [-100] * instruction_length
+
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": labels
     }
- 
-dataset = dataset.map(lambda x: generate_r1_prompt(x["instruction"], x["output"]), remove_columns=["instruction", "output"])
+
+# 使用 map 操作对整个数据集进行处理，调用 generate_r1_prompt 来转换格式
+# 并删除原始字段 instruction 和 output，只保留训练所需的 input_ids, attention_mask, labels
+dataset = dataset.map(
+    lambda x: generate_r1_prompt(x["instruction"], x["output"]),
+    remove_columns=["instruction", "output"]
+)
+
 
 print(tokenizer.decode(dataset[0]["input_ids"]))
 
@@ -59,18 +86,19 @@ print(tokenizer.decode(list(filter(lambda x: x != -100, dataset[0]["labels"]))))
 model = AutoModelForCausalLM.from_pretrained(model_path)
 
 training_args = TrainingArguments(
-    output_dir="./fine_tuned_qwen",
-    per_device_train_batch_size=1,
-    num_train_epochs=10,
-    save_strategy="no",
-    logging_dir="./logs",
-    logging_steps=1,
-    evaluation_strategy="no",
-    save_total_limit=1,
-    deepspeed="deepspeed_config.json",
-    fp16=True,
-    gradient_checkpointing=True,
+    output_dir="./fine_tuned_qwen",               # 模型输出目录
+    per_device_train_batch_size=1,                # 每张GPU的训练batch大小
+    num_train_epochs=10,                          # 总训练轮数
+    save_strategy="no",                           # 不保存中间checkpoint
+    logging_dir="./logs",                         # 日志保存路径
+    logging_steps=1,                              # 每训练1步记录一次日志
+    evaluation_strategy="no",                     # 不进行评估
+    save_total_limit=1,                           # 最多保留1个checkpoint
+    deepspeed="deepspeed_config.json",            # 指定deepspeed配置文件
+    fp16=True,                                    # 使用混合精度训练（float16）
+    gradient_checkpointing=True                   # 启用梯度检查点，节省显存
 )
+
 
 trainer = Trainer(
     model=model,
