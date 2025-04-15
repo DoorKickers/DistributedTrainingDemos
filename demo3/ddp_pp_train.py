@@ -191,7 +191,6 @@ def parse_yaml_config(file_path):
 
 
 def train(rank, world_size, config_file):
-    # 加载配置
     model_args, dataset_args, training_args, parallel_args = parse_yaml_config(config_file)
 
     # 定义 loss 函数
@@ -303,7 +302,7 @@ def train(rank, world_size, config_file):
                 # 第一个阶段只进行前向传播
                 schedule.step(x)
             else:
-                # 其他阶段进行前向 + 反向传播，并收集 loss
+                # 最后一个阶段进行前向 + 反向传播，并收集 loss
                 losses = []
                 output = schedule.step(target=label, losses=losses)
                 loss = torch.stack(losses).mean()

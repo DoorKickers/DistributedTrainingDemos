@@ -104,7 +104,6 @@ def forward_step_func(data_iterator, model):
         # 只对有 label 的位置计算损失
         loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()
 
-        # 返回 loss 和一个带有命名的字典（便于日志记录等）
         return loss, {'lm loss': loss}
 
     # 从数据迭代器中取出一批数据，并放到指定设备上
@@ -118,15 +117,12 @@ def forward_step_func(data_iterator, model):
     # 调用模型进行前向传播，返回输出张量
     output_tensor = model(tokens, position_ids, attention_mask, labels=labels)
 
-    # 返回输出和部分绑定好的 loss 函数（只差 output_tensor）
     return output_tensor, partial(loss_func, loss_mask)
 
 
 # 保存分布式模型 checkpoint
 def save_distributed_checkpoint(checkpoint_path, gpt_model):
-    # 获取模型的分片 state_dict
     sharded_state_dict = gpt_model.sharded_state_dict(prefix='')
-    # 保存分布式分片 checkpoint
     dist_checkpointing.save(sharded_state_dict=sharded_state_dict, checkpoint_dir=checkpoint_path)
 
 
@@ -134,7 +130,6 @@ def save_distributed_checkpoint(checkpoint_path, gpt_model):
 def load_distributed_checkpoint(checkpoint_path, gpt_model):
     sharded_state_dict = gpt_model.sharded_state_dict(prefix='')
     checkpoint = dist_checkpointing.load(sharded_state_dict=sharded_state_dict, checkpoint_dir=checkpoint_path)
-    # 加载参数到模型中
     gpt_model.load_state_dict(checkpoint)
     return gpt_model
 
@@ -149,24 +144,19 @@ if __name__ == "__main__":
     # 初始化模型
     gpt_model = model_provider()
 
-    # 将模型放到 CUDA 设备上
     device = torch.device("cuda")
     gpt_model.to(device)
 
-    # 使用 Adam 优化器
     optim = Adam(gpt_model.parameters())
 
-    # 获取训练数据迭代器（每次返回一批数据）
     train_iterator = get_train_data_iterator()
 
-    # 获取前向和反向传播封装函数
     forward_backward_func = get_forward_backward_func()
 
     # 训练 200 次迭代
     for _ in range(200):
         optim.zero_grad()
 
-        # 前向 + 反向传播，支持多 microbatch 的训练
         losses_reduced = forward_backward_func(
             forward_step_func=forward_step_func,  # 前向函数
             data_iterator=train_iterator,        # 数据迭代器
