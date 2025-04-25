@@ -271,7 +271,7 @@ def train(rank, world_size, config_file):
 
     # 构建流水线执行阶段
     info = pipe.info()
-    stage = build_stage(dp_mod, pp_rank, info, device, pp_group)
+    stage = build_stage(stage_mod, pp_rank, info, device, pp_group)
 
     # 构建流水线调度器（GPipe），支持前后向分段流水并行
     schedule = ScheduleGPipe(stage, training_args["micro_num"], compute_loss)
